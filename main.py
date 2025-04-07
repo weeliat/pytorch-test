@@ -4,6 +4,9 @@ import torch.distributed as dist
 import torch.nn as nn
 import torch.optim as optim
 from torchvision import datasets, transforms
+import os
+import time
+import datetime
 
 
 def run_training(rank, world_size):
@@ -19,6 +22,26 @@ def run_training(rank, world_size):
 
     # Set up distributed process group
     print(f"Initializing process group: rank={rank}, world_size={world_size}")
+
+    # Set environment variables for distributed training
+    os.environ["MASTER_ADDR"] = "localhost"
+    os.environ["MASTER_PORT"] = "29500"
+    os.environ["WORLD_SIZE"] = str(world_size)
+    os.environ["RANK"] = str(rank)
+
+    # Initialize process group with timeout
+    try:
+        dist.init_process_group(
+            backend="nccl",
+            init_method="env://",
+            world_size=world_size,
+            rank=rank,
+            timeout=datetime.timedelta(seconds=60),  # 60 second timeout
+        )
+        print(f"Rank {rank}: Successfully initialized process group")
+    except Exception as e:
+        print(f"Rank {rank}: Failed to initialize process group: {e}")
+        raise
 
     # Load data with proper distribution
     transform = transforms.Compose(
@@ -83,6 +106,9 @@ def run_training(rank, world_size):
             artifact_object=model.state_dict(),
         )
 
+    # Clean up
+    dist.destroy_process_group()
+
 
 if __name__ == "__main__":
     # Initialize the ClearML task
@@ -94,13 +120,11 @@ if __name__ == "__main__":
     # Launch multi-node execution
     config = task.launch_multi_node(total_num_nodes=2, port=29500)
 
-    # Change the backend to NCCL for GPU training
-    dist.init_process_group(
-        backend="nccl",  # Changed from 'gloo' to 'nccl'
-        init_method="env://",
-        world_size=config.get("total_num_nodes"),
-        rank=config.get("node_rank"),
-    )
+    # Get rank and world size from config
+    rank = config.get("node_rank")
+    world_size = config.get("total_num_nodes")
+
+    print(f"Starting process with rank {rank} out of {world_size} processes")
 
     # Run the training function
-    run_training(config.get("node_rank"), config.get("total_num_nodes"))
+    run_training(rank, world_size)
