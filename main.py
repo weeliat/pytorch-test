@@ -9,6 +9,14 @@ from torchvision import datasets, transforms
 def run_training(rank, world_size):
     print(f"Running training on rank {rank} out of {world_size} processes")
 
+    # Check if CUDA is available
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is not available. GPU is required for this training")
+
+    # Set the device
+    torch.cuda.set_device(rank)
+    device = torch.device(f"cuda:{rank}")
+
     # Set up distributed process group
     print(f"Initializing process group: rank={rank}, world_size={world_size}")
 
@@ -27,15 +35,21 @@ def run_training(rank, world_size):
     # Create model, loss function, and optimizer
     model = nn.Sequential(
         nn.Flatten(), nn.Linear(784, 128), nn.ReLU(), nn.Linear(128, 10)
-    )
+    ).to(
+        device
+    )  # Move to GPU immediately
 
-    # Move model to the appropriate device
-    device = torch.device(f"cuda:{rank}" if torch.cuda.is_available() else "cpu")
-    model = model.to(device)
-    model = nn.parallel.DistributedDataParallel(model)
+    # Use DistributedDataParallel with device_ids explicitly set
+    model = nn.parallel.DistributedDataParallel(model, device_ids=[rank])
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=0.01)
+
+    # Add this at the start of run_training
+    print(f"Rank {rank}: CUDA available: {torch.cuda.is_available()}")
+    print(f"Rank {rank}: Current device: {torch.cuda.current_device()}")
+    print(f"Rank {rank}: Device count: {torch.cuda.device_count()}")
+    print(f"Rank {rank}: Device name: {torch.cuda.get_device_name(rank)}")
 
     # Training loop
     for epoch in range(5):
@@ -72,9 +86,7 @@ def run_training(rank, world_size):
 
 if __name__ == "__main__":
     # Initialize the ClearML task
-    task = Task.init(
-        project_name="Tests", task_name="pytorch_distributed_training"
-    )
+    task = Task.init(project_name="Tests", task_name="pytorch_distributed_training")
 
     # Execute remotely
     task.execute_remotely(queue_name="default")
@@ -82,10 +94,10 @@ if __name__ == "__main__":
     # Launch multi-node execution
     config = task.launch_multi_node(total_num_nodes=2, port=29500)
 
-    # Initialize the distributed process group
+    # Change the backend to NCCL for GPU training
     dist.init_process_group(
-        backend="gloo",  # or 'nccl' for GPU training
-        init_method=f"env://",
+        backend="nccl",  # Changed from 'gloo' to 'nccl'
+        init_method="env://",
         world_size=config.get("total_num_nodes"),
         rank=config.get("node_rank"),
     )
